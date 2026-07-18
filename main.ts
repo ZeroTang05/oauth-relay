@@ -140,20 +140,31 @@ function safeEquals(a: string, b: string): boolean {
 }
 
 /**
- * Parse the request path into a relay key, validating the leading slash and
- * forbidding anything that doesn't exactly match the table keys.
+ * Parse the request path into a relay key. The path must be exactly two
+ * segments under `/oauth/` — provider and stage — matching a table key
+ * verbatim. Anything else (empty tail, three+ segments, `..`, trailing
+ * slash) is rejected so the relay cannot be coerced into a generic proxy.
  *
- *   "/oauth/google/token"   -> "google/token"
- *   "/oauth/google/token/"  -> null   (no trailing slash, keep table 1:1)
- *   "//oauth/google/token"  -> null   (must collapse cleanly)
+ *   "/oauth/google/token"      -> "google/token"
+ *   "/oauth/linuxdo/userinfo"  -> "linuxdo/userinfo"
+ *   "/oauth/google/token/"     -> null   (no trailing slash)
+ *   "/oauth/google/token/extra"-> null   (no extra segments)
+ *   "/oauth/google"            -> null   (missing stage segment)
  */
 function parseRelayKey(pathname: string): RelayKey | null {
   if (!pathname.startsWith("/oauth/")) return null;
   const tail = pathname.slice("/oauth/".length);
-  // Reject empty / nested / suspicious paths explicitly. The relay must NOT
-  // act as a generic forwarder.
-  if (tail.length === 0 || tail.includes("/") || tail.includes("..")) return null;
-  if (tail in UPSTREAM_TABLE) return tail as RelayKey;
+  if (tail.length === 0 || tail.includes("..")) return null;
+  if (tail.endsWith("/")) return null;
+  const segments = tail.split("/");
+  // Exactly two segments: "<provider>/<stage>". Anything else is not in the
+  // table — the relay is intentionally dumb and must NOT fall through to a
+  // generic upstream lookup.
+  if (segments.length !== 2) return null;
+  const [provider, stage] = segments;
+  if (!provider || !stage) return null;
+  const key = `${provider}/${stage}`;
+  if (key in UPSTREAM_TABLE) return key as RelayKey;
   return null;
 }
 
