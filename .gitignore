@@ -1,0 +1,13 @@
+# Local secrets — never commit.
+.env
+.env.local
+.env.*.local
+
+# Deno cache
+.deno/
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.log
