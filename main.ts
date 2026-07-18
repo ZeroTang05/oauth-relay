@@ -1,9 +1,14 @@
-// OAuth relay — transparent tunnel for Google + Linux.do OAuth HTTP traffic.
+// OAuth relay — transparent HTTP tunnel for OAuth token + userinfo calls.
+//
+// The relay forwards requests from a region that cannot reach OAuth providers
+// directly (e.g. Google, Linux.do) to those providers via a Deno Deploy edge
+// function. It is generic and provider-agnostic — the upstream table is a
+// plain allow-list and any new provider can be added by appending one entry.
 //
 // Design notes (security model)
 // -----------------------------
 // 1. The relay stores NOTHING. Every request body and header is forwarded
-//    verbatim. client_id / client_secret live in the GoWith api container and
+//    verbatim. client_id / client_secret live in the calling application and
 //    transit through this process only as URL-encoded form fields or a Basic
 //    Authorization header.
 // 2. The relay only forwards to a fixed allow-list of upstream hosts. Any
@@ -16,13 +21,22 @@
 //
 // Routes
 // ------
-//   POST  /oauth/google/token      -> https://oauth2.googleapis.com/token
-//   GET   /oauth/google/userinfo   -> https://openidconnect.googleapis.com/v1/userinfo
-//   POST  /oauth/linuxdo/token     -> https://connect.linux.do/oauth2/token
-//   GET   /oauth/linuxdo/userinfo  -> https://connect.linux.do/api/user
-//   GET   /healthz                 -> liveness probe (no upstream call)
+//   POST  /oauth/github/token       -> https://github.com/login/oauth/access_token
+//   GET   /oauth/github/userinfo    -> https://api.github.com/user
+//   POST  /oauth/google/token       -> https://oauth2.googleapis.com/token
+//   GET   /oauth/google/userinfo    -> https://openidconnect.googleapis.com/v1/userinfo
+//   POST  /oauth/linuxdo/token      -> https://connect.linux.do/oauth2/token
+//   GET   /oauth/linuxdo/userinfo   -> https://connect.linux.do/api/user
+//   GET   /healthz                  -> liveness probe (no upstream call)
 //
 // Anything else returns 404 — there is no catch-all, no proxy mode.
+//
+// Adding a new provider
+// ---------------------
+// Append two entries to UPSTREAM_TABLE below, one for the token endpoint
+// (POST) and one for the userinfo endpoint (GET). Set the corresponding
+// `<PROVIDER>_TOKEN_UPSTREAM` / `<PROVIDER>_USERINFO_UPSTREAM` env vars
+// if you need to override the defaults. No other code change is needed.
 
 const RELAY_TOKEN_HEADER = "x-relay-token";
 const LOG_PREFIX = "[oauth-relay]";
@@ -33,6 +47,15 @@ const LOG_PREFIX = "[oauth-relay]";
 // ---------------------------------------------------------------------------
 
 const UPSTREAM_TABLE = {
+  "github/token": {
+    upstream:
+      Deno.env.get("GITHUB_TOKEN_UPSTREAM") ?? "https://github.com/login/oauth/access_token",
+    method: "POST",
+  },
+  "github/userinfo": {
+    upstream: Deno.env.get("GITHUB_USERINFO_UPSTREAM") ?? "https://api.github.com/user",
+    method: "GET",
+  },
   "google/token": {
     upstream:
       Deno.env.get("GOOGLE_TOKEN_UPSTREAM") ?? "https://oauth2.googleapis.com/token",
