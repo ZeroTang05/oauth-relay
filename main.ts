@@ -289,16 +289,23 @@ async function handle(req: Request): Promise<Response> {
   // Forward the upstream response headers verbatim, minus hop-by-hop headers
   // and Set-Cookie (the relay should not be propagating cookies that were
   // not requested for it).
+  //
+  // content-encoding / content-length 也必须剥掉：Deno 的 fetch 会自动解压
+  // gzip 正文，但 header 里仍保留上游的 content-encoding: gzip 和旧的
+  // content-length。照抄出去客户端会收到 header 与正文长度矛盾的响应：
+  // HTTP/2 直接 PROTOCOL_ERROR，HTTP/1.1 读到 0 字节后断开。
   const responseHeaders = new Headers();
-  const HOP_BY_HOP = new Set([
+  const STRIPPED_HEADERS = new Set([
     "connection",
     "keep-alive",
     "transfer-encoding",
     "upgrade",
     "set-cookie",
+    "content-encoding",
+    "content-length",
   ]);
   for (const [name, value] of upstreamResp.headers.entries()) {
-    if (!HOP_BY_HOP.has(name.toLowerCase())) {
+    if (!STRIPPED_HEADERS.has(name.toLowerCase())) {
       responseHeaders.set(name, value);
     }
   }
