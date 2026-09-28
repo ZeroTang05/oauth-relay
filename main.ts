@@ -252,8 +252,8 @@ async function handle(req: Request): Promise<Response> {
   }
 
   // Pass the request body through byte-for-byte. For POST the upstream is
-  // always `application/x-www-form-urlencoded` from the GoWith api side, but
-  // we don't enforce it here — the relay is intentionally dumb.
+  // always `application/x-www-form-urlencoded` from the calling application,
+  // but we don't enforce it here — the relay is intentionally dumb.
   const body = req.method === "POST" ? await req.arrayBuffer() : undefined;
 
   const controller = new AbortController();

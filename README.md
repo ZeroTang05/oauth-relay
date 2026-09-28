@@ -1,34 +1,84 @@
 # oauth-relay
 
-Deno Deploy 反代，把 OAuth HTTP 流量从**无法直连 OAuth provider 的机房**中转出来。
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Made with Deno](https://img.shields.io/badge/Made%20with-Deno-70ffaf.svg)](https://deno.com)
 
-通用、provider 无关。上游白名单 + 路径白名单 + 共享密钥鉴权,**无状态、不存储凭据**。
+A stateless OAuth endpoint relay for Deno Deploy — tunnel Google / GitHub / Linux.do
+OAuth HTTP calls out from networks that cannot reach those providers directly.
+
+Deno Deploy 反代，把 OAuth HTTP 流量从**无法直连 OAuth provider 的网络环境**中转出来。
+
+通用、provider 无关。上游白名单 + 路径白名单 + 共享密钥鉴权，**无状态、不存储凭据**。
 
 典型场景:
-- 部署在国内机房,但要支持 Google / Linux.do / GitHub 等海外 OAuth provider
+
+- 后端服务部署在访问不了 Google / GitHub 等站点的网络里（例如国内机房），
+  但仍要支持这些 provider 的 OAuth 登录
 - 任何需要"按白名单代理特定 OAuth endpoint"的项目
+
+## 一键部署
+
+<a href="https://console.deno.com/new?clone=https://github.com/Warma10032/oauth-relay">
+  <img src="https://deno.com/button" alt="Deploy on Deno" />
+</a>
+
+按钮会把本仓库克隆到你自己的 GitHub 账号下，并在 Deno Deploy 创建项目，全程不用敲命令：
+
+1. Entry point 保持 `main.ts`（Deno Deploy 直接运行 .ts，无需 build step）。
+2. 部署完成后，进入项目 **Settings → Environment Variables** 添加环境变量：
+
+   | 变量 | 必填 | 说明 |
+   |---|---|---|
+   | `RELAY_SHARED_SECRET` | ✅ | 共享密钥，建议 32 字节以上随机字符串（`openssl rand -hex 32` 生成） |
+   | `CORS_ALLOWED_ORIGINS` | | 允许跨域的来源，逗号分隔；留空 = 关闭 CORS（此时仅适合后端服务器调用，浏览器页面无法直调） |
+   | `UPSTREAM_TIMEOUT_MS` | | 单次上游调用超时毫秒数，默认 `10000` |
+   | `LOG_LEVEL` | | `debug` / `info` / `warn` / `error`，默认 `info` |
+
+   每条路由的上游地址也可以用环境变量覆盖（如 `GOOGLE_TOKEN_UPSTREAM`），见 `.env.example`。
+3. 改完环境变量后重新部署一次使其生效。
+4. 探活：`curl https://<你的域名>/healthz` 返回 `ok` 即部署成功。
+5. （可选）在 **Settings → Domains** 绑定自定义域名。
+
+## 验证部署
+
+用假参数测一遍 token 透传，确认"反代 → 谷歌"整条链路可达：
+
+```bash
+TOKEN=replace-with-your-relay-shared-secret
+
+# 探活
+curl -i https://<你的域名>/healthz
+
+# 用假 code 请求谷歌 token endpoint
+curl -i -X POST https://<你的域名>/oauth/google/token \
+  -H "X-Relay-Token: $TOKEN" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "code=fake&client_id=fake&client_secret=fake&grant_type=authorization_code&redirect_uri=urn:fake"
+```
+
+期望返回 **400 + 谷歌返回的 JSON 错误**（`invalid_grant` / `invalid_request` 都正常）。
+错误 JSON 是谷歌亲手写的——这证明请求确实穿透反代到达了谷歌，链路是通的。
 
 ## 为什么需要它
 
-- 调用方(api 容器 / 后端服务)部署在国内机房,出口对 OAuth provider 不可达
-  (`node fetch` 在容器内全部 `ETIMEDOUT`)。
-- 把 OAuth token + userinfo 流量走 Deno Deploy 边缘节点,调用方只需调一个
-  国内可访问的 HTTPS endpoint 即可。
+- 调用方（你的后端服务）所在网络对 OAuth provider 不可达，`fetch` 直接 `ETIMEDOUT`。
+- 把 OAuth token + userinfo 流量走 Deno Deploy 边缘节点中转，调用方只需调一个
+  自己网络可达的 HTTPS endpoint。
 - 反代**不存储**任何 OAuth 凭据——`client_id` / `client_secret` 始终在调用方
-  容器里,只作为请求 body / Authorization header 透传。
+  自己的服务里，只作为请求 body / Authorization header 透传。
 
 ## 安全模型
 
 1. **无状态** — 反代不持久化任何请求数据、header、body 或 cookie。每次调用
    都是单向透传。
-2. **路径白名单** — 只接受固定的路由表,任何其他路径返回 404,**没有 catch-all**,
+2. **路径白名单** — 只接受固定的路由表，任何其他路径返回 404，**没有 catch-all**,
    不可能被滥用为通用代理。
-3. **共享密钥** — 每个请求必须带 `X-Relay-Token: <RELAY_SHARED_SECRET>`,
-   否则返回 401。密钥使用常数时间比较,避免 timing side-channel。
+3. **共享密钥** — 每个请求必须带 `X-Relay-Token: <RELAY_SHARED_SECRET>`，
+   否则返回 401。密钥使用常数时间比较，避免 timing side-channel。
 4. **CORS** — 默认关闭。启用时只允许 `CORS_ALLOWED_ORIGINS` 列出的 origin。
 5. **Header 白名单** — 转发到上游的 header 仅限 `Authorization / Content-Type /
    Accept / Accept-Language / User-Agent`,`Host / Cookie / Referer` 不透传。
-6. **超时** — 默认 10 s 单次上游调用上限,超时返回 502。
+6. **超时** — 默认 10 s 单次上游调用上限，超时返回 502。
 
 ## 路由表(内置 provider)
 
@@ -91,42 +141,15 @@ cp .env.example .env
 deno task dev
 ```
 
-测试调用:
-
-```bash
-TOKEN=replace-with-32-byte-random-secret
-curl -i http://localhost:8000/healthz
-
-# 调 Google token endpoint(带个假 code 看是否真的能透传到 Google)
-curl -i -X POST http://localhost:8000/oauth/google/token \
-  -H "X-Relay-Token: $TOKEN" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "code=fake&client_id=fake&client_secret=fake&grant_type=authorization_code&redirect_uri=urn:fake"
-# 期望: 400 + invalid_grant(上游真实返回,证明网络通了)
-```
-
-## 部署到 Deno Deploy
-
-1. 在 https://dash.deno.com 新建项目。
-2. **Entry point** 填 `main.ts`,不需要 build step(Deno Deploy 直接跑 .ts)。
-3. 在项目 Settings → Environment Variables 添加:
-   - `RELAY_SHARED_SECRET` — 32+ 字节随机字符串
-   - `CORS_ALLOWED_ORIGINS` — 调用方 origin,逗号分隔(可留空)
-   - `UPSTREAM_TIMEOUT_MS` — `10000`
-   - `LOG_LEVEL` — `info`
-4. 部署后你会得到 `https://<project-name>.<org>.deno.net`。
-5. 用 `curl /healthz` 探活。
-6. (可选)绑定自定义域名 — 在 Settings → Domains 添加。
-
 ## 调用方对接
 
-部署完成后,把反代域名写到调用方配置:
+部署完成后,把反代域名和密钥写进调用方(你的后端服务)配置:
 
 ```bash
-# 反代域名(Deno Deploy 给的 *.deno.net,或绑了自定义域名)
-OAUTH_RELAY_BASE_URL=https://oauth-relay.example.com
+# 反代域名(Deno Deploy 分配的域名,或你绑定的自定义域名)
+OAUTH_RELAY_BASE_URL=https://your-relay.example.com
 
-# 与 oauth-relay/.env 的 RELAY_SHARED_SECRET 完全一致
+# 与反代环境的 RELAY_SHARED_SECRET 完全一致
 OAUTH_RELAY_TOKEN=replace-with-32-byte-random-secret
 ```
 
@@ -139,15 +162,17 @@ const token = await exchangeToken("https://oauth2.googleapis.com/token", ...);
 const token = await exchangeToken(`${env.oauthRelayBaseUrl}/oauth/google/token`, ...);
 ```
 
-`client_id` / `client_secret` 仍在调用方容器里,反代只是透传,安全模型不变。
+`client_id` / `client_secret` 仍在调用方自己的服务里,反代只是透传,安全模型不变。
 
 ## 上线清单
 
-- [ ] 生成 32+ 字节随机密钥,写入反代 `.env` 和调用方 env
-- [ ] 部署到 Deno Deploy,得到稳定 endpoint
+- [ ] 生成 32+ 字节随机密钥,写入反代环境变量和调用方 env
 - [ ] `curl https://<relay>/healthz` 返回 200
-- [ ] `curl -X POST https://<relay>/oauth/google/token -H "X-Relay-Token: ..." -d "code=fake&..."` 返回 400 / invalid_grant(证明网络可达)
+- [ ] `curl -X POST https://<relay>/oauth/google/token -H "X-Relay-Token: ..." -d "code=fake&..."` 返回 400 + 谷歌 JSON 错误(证明链路可达)
 - [ ] 修改调用方 OAuth 代码,把对应 URL 切到反代
 - [ ] 调用方增加 `OAUTH_RELAY_BASE_URL` / `OAUTH_RELAY_TOKEN` env 解析
-- [ ] 重新部署调用方
-- [ ] 重新走 OAuth 绑定流程,日志不再出现 connection / unavailable 类错误
+- [ ] 重新走 OAuth 绑定流程,日志出现 `INFO relay ok`
+
+## License
+
+[MIT](LICENSE)
